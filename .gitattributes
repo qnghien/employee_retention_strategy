@@ -4,6 +4,3 @@
 *.Rmd linguist-language=R
 *.Rhistory linguist-language=R
 *.Rproj linguist-language=R
-
-# Force Rmd files to be considered primarily R
-*.Rmd linguist-detectable=false
