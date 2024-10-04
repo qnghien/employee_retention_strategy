@@ -1,5 +1,7 @@
 # Employee Retention Analysis: Insights and Strategies
 ![Fraud Detection Image](img/emp_retention.png)
+
+For better experience with notebook, please visit this link from RPubs: https://rpubs.com/ryanngx217/1228148
 ## Introduction
 
 In today’s fast-paced work environments, retaining employees has become a top priority for organizations worldwide. When a team member leaves the company, it not only disrupts workflows but also increases costs associated with recruitment, training, and the time needed for new hires to integrate with existing teams, leading to a decrease in overall productivity. As the demand for tackling this challenge rises, many companies are turning to sophisticated analytical methods to uncover the underlying reasons behind employee turnover and to develop predictive models that anticipate future departures.
