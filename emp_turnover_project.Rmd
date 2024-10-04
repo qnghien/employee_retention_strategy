@@ -1,0 +1,724 @@
+---
+title: "Data-Driven Employee Retention: Leveraging Survival and Uplift Modeling for Strategic HR Insights"
+author: "Quan Nguyen Hien"
+date: "2024-04-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)   # data manipulation
+library(MASS)
+library(gridExtra)
+library(survival)    # For performing survival analysis
+library(survminer)   # For creating and customizing survival curves using ggplot2
+```
+
+
+# Introduction
+
+In today's fast-paced work environments, retaining employees has become a top priority for organizations worldwide.  When a team member leaves the company, this not only causes a disruption in workflows, but also leads to an increase in terms of costs that need to be spent on recruitment, training as well as necessary time to get along with other team members that decrease the overall productivity. As there’s a rising demand on identifying and tackling this challenge, many companies are increasingly turning to sophisticated analytical methods to uncover the underlying reasons behind employee turnover and allows for the development of predictive models to anticipate future departures. In this project, I will focus on using Survival Analysis for this problem with its advantages in modeling the employee's risk of quitting from the companies based on a real dataset provided by Edward Babushkin, who examines the importance of this method instead of using logistic regression for risk assessment. 
+
+# Data Information
+
+## Data Overview
+
+The dataset contains the following variables:
+
+- **stag**: Employee experience (in years) will be renamed as **experience (exp)** in the analysis
+- **event**: Employee turnover (1 = turnover, 0 = no turnover)
+- **gender**: Employee's gender  
+  - `f`: Female  
+  - `m`: Male
+- **age**: Employee's age (in years)
+- **industry**: Employee's industry sector
+- **profession**: Employee's profession
+- **traffic**: The source or pipeline through which the employee came to the company:
+  - `advert`: Employee contacted the company directly after learning about it (through ads, company branding, etc.)
+  - `recNErab`: Contacted the company on the recommendation of a non-employee friend
+  - `referal`: Contacted the company on the recommendation of an employee friend
+  - `youjs`: Applied for a vacancy on a job site
+  - `KA`: Recruited through a recruitment agency
+  - `friends`: Invited by the employer, with prior acquaintance
+  - `rabrecNErab`: Employer contacted the employee on the recommendation of a non-employee acquaintance
+  - `empjs`: Employer found the employee through their resume on a job site
+- **coach**: Presence of a coach or training during probation (1 = yes, 0 = no)
+- **head_gender**: Gender of the employee's supervisor (head)
+- **greywage**: Whether the salary is not reported to tax authorities (grey wage system)
+- **way**: Employee's mode of transportation to work
+- **extraversion**: Employee’s extraversion score
+- **independ**: Employee’s independence score
+- **selfcontrol**: Employee’s self-control score
+- **anxiety**: Employee’s anxiety score
+- **novator**: Employee’s innovation (novator) score
+
+
+```{r}
+# Read the data
+emp_df <- read.csv("employee/turnover.csv")
+```
+
+```{r}
+# Show the data's structure
+str(emp_df)
+```
+
+```{r}
+# Sample the first 6 rows of the data
+head(emp_df)
+```
+
+## Data Pre-processing
+
+```{r}
+# Rename the columns for better representation
+colnames(emp_df) <- c("exp","event","self_gender","age","field","prof","route","coach","head_gender","wage","trans","score_extro","score_idpt","score_selfctrl","score_anx","score_innov")
+```
+
+```{r}
+# Categorize feature based on their data types
+cat_features <- c("self_gender", "field", "prof", "route", "coach", "head_gender", "wage", "trans")
+num_features <- colnames(emp_df)[!c(colnames(emp_df) %in% cat_features)]
+```
+
+```{r}
+num_features 
+```
+
+
+
+
+
+First, we can investigate the unique values of each categorical variable.
+
+```{r}
+# Unique values of each categorical features
+for (col in cat_features){
+  print(table(emp_df[col]))
+}
+```
+
+As we can see from a sneek peak of the dataset, during the data collection process, some typographical errors were introduced (e.g., Finance is recorded as **Finan\xf1e**), which could potentially complicate the analysis and interpretation. To ensure accurate results and clear insights, it is necessary to address these inconsistencies. Additionally, we can refine and re-categorize certain values for easier interpretation based on the provided assumptions. Below are some suggested re-factorings for the categorical variables:
+
+
+
+```{r}
+emp_df <- emp_df %>%
+  mutate(prof = if_else(prof == "Finan\xf1e", "Finance", prof))
+
+emp_df %>% mutate(field = factor(case_match(
+  field,
+  .default="others",
+  "Retail" ~ "retail",
+  "manufacture" ~ "manufacture",
+  "IT" ~ "IT",
+  "Banks" ~ "finance"))) -> emp_df
+
+emp_df %>% mutate(route = factor(case_match(
+  route,
+  .default="others",
+  "empjs" ~ "jobsite_resume",
+  "friends" ~ "friends",
+  c("referal", "rabrecNErab", "recNErab") ~ "recommend",
+  "youjs" ~ "jobsite_apply"))) -> emp_df
+
+```
+
+
+```{r}
+for (col in cat_features){
+  print(table(emp_df[col]))
+}
+```
+
+```{r}
+# Convert all categorical features to factor data type
+for (col in cat_features) {
+  emp_df[[col]] <- as.factor(emp_df[[col]])
+}
+```
+
+```{r}
+## Change appropriate reference group:
+emp_df$field <- relevel(emp_df$field, ref = "others")
+emp_df$route <- relevel(emp_df$route, ref = "others")
+emp_df$coach <- relevel(emp_df$coach, ref = "no")
+emp_df$wage <- relevel(emp_df$wage, ref = "grey")
+emp_df$trans <- relevel(emp_df$trans, ref = "bus")
+```
+
+# Exploratory Data Analysis
+
+In this section, we will explore the dataset to gain initial insights and identify patterns, trends, and potential anomalies. Through descriptive statistics and visualizations, we will highlight key features and prepare the dataset for more advanced analysis.
+
+
+```{r}
+# Summary statistics for numerical features
+summary(emp_df[num_features])
+```
+
+
+```{r}
+# Set up the plot window to display multiple plots
+par(mfrow = c(2, 2))
+
+for (column in num_features) {
+  hist(emp_df[[column]], main = paste("Histogram of", column), xlab = column, col = "lightblue")
+}
+
+```
+We will further look into the distribution of response variable **Experience (exp)** for non-censored as well censored data:
+
+
+```{r}
+par(mfrow=c(2,1))
+hist(as.matrix(emp_df %>% filter(event==1) %>%  pull(exp)), xlab="Experience", main="Non-censored data",col = "lightblue")
+
+hist(as.matrix(emp_df %>% filter(event==0) %>% pull(exp)), xlab="Experience", main="Censored data", col = "lightblue")
+```
+
+As we can observe the non-normal skewness from above histogram of the **exp** (years of experience) for both the uncensored and censored data, it would be reasonable to apply survival analysis for this problem
+
+```{r}
+long_df <- pivot_longer(emp_df, cols =c(self_gender, field, prof, route, coach, head_gender, wage, trans), names_to = "Category", values_to = "Value")
+cat_factors <- c("self_gender", "field", "prof", "route", "coach", "head_gender", "wage", "trans")
+
+# Loop through each categorical variable and create a plot
+plots <- lapply(cat_factors, function(cat) {
+  ggplot(data = filter(long_df, Category == cat), aes(x = Value, fill = Value)) +
+    geom_bar() +
+    facet_wrap(~event, nrow = 2) + 
+    labs(title = paste("Distribution of", cat, "by Event (censored or not)"), x = cat, y = "Count") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+})
+
+```
+
+
+```{r}
+plots
+```
+
+
+## Non-parametric Methods (Kaplan-Meier):
+
+First, we will investigate whether different groups within the dataset exhibit variations in retention rates (also referred to as survival rates in the context of survival analysis). To do this, we will calculate Kaplan-Meier estimates for each group, enabling a comparison of their retention rates. Additionally, we will conduct a log-rank test to determine whether the observed differences between the groups are statistically significant with predetermined significance level of 0.05.
+
+
+```{r}
+mod <- survfit(Surv(exp, event)~self_gender, data = emp_df)
+plot1 <- ggsurvplot(mod, data = emp_df,
+                     conf.int = FALSE,
+                     ggtheme = theme_minimal(),
+                     pval = TRUE,
+                     pval.method = TRUE) +
+          ggtitle("Retention curve by Employee's Gender")
+
+mod <- survfit(Surv(exp, event)~field, data = emp_df)
+plot2 <- ggsurvplot(mod, data = emp_df,
+                     conf.int = FALSE,
+                     ggtheme = theme_minimal(),
+                     pval = TRUE,
+                     pval.method = TRUE) +
+          ggtitle("Retention curve by Employee's Industry sector")
+
+
+mod <- survfit(Surv(exp, event)~prof, data = emp_df)
+plot3 <- ggsurvplot(mod, data = emp_df,
+                     conf.int = FALSE,
+                     ggtheme = theme_minimal(),
+                     pval = TRUE,
+                     pval.method = TRUE) +
+          ggtitle("Retention curve by Employee's Profession")
+
+mod <- survfit(Surv(exp, event)~route, data = emp_df)
+plot4 <- ggsurvplot(mod, data = emp_df,
+                     conf.int = FALSE,
+                     ggtheme = theme_minimal(),
+                     pval = TRUE,
+                     pval.method = TRUE) +
+          ggtitle("Retention curve by Employee's Source came to the Company")
+
+mod <- survfit(Surv(exp, event)~coach, data = emp_df)
+plot5 <- ggsurvplot(mod, data = emp_df,
+                     conf.int = FALSE,
+                     ggtheme = theme_minimal(),
+                     pval = TRUE,
+                     pval.method = TRUE) +
+          ggtitle("Retention curve by Employee's Coaching/Training availability")
+
+mod <- survfit(Surv(exp, event)~head_gender, data = emp_df)
+plot6 <- ggsurvplot(mod, data = emp_df,
+                     conf.int = FALSE,
+                     ggtheme = theme_minimal(),
+                     pval = TRUE,
+                     pval.method = TRUE) +
+          ggtitle("Retention curve by Gender of the employee's supervisor")
+
+mod <- survfit(Surv(exp, event)~wage, data = emp_df)
+plot7 <- ggsurvplot(mod, data = emp_df,
+                     conf.int = FALSE,
+                     ggtheme = theme_minimal(),
+                     pval = TRUE,
+                     pval.method = TRUE) +
+          ggtitle("Retention curve by Employee's Wage (Tax reported or not)")
+
+
+mod <- survfit(Surv(exp, event)~trans, data = emp_df)
+plot8 <- ggsurvplot(mod, data = emp_df,
+                     conf.int = FALSE,
+                     ggtheme = theme_minimal(),
+                     pval = TRUE,
+                     pval.method = TRUE) +
+          ggtitle("Retention curve by Employee's mode of Transportation")
+```
+
+
+```{r}
+plot1$plot; plot2$plot; plot3$plot; plot4$plot; 
+plot5$plot; plot6$plot; plot7$plot; plot8$plot
+
+```
+
+Based on the following results, we can confirm that there's difference in terms of retention rate for the following variable:
+- **Industry Sector (field)**
+- **Profession (prof)**
+- **Source came to Company (route)**
+- **Wage tax authorized or not (wage)**
+- **Mode of Transportation (trans)**
+
+
+# Data Modelling
+
+## Parametric Survival Model
+
+### Find Parametric Distribution
+We need to determine which distribution the **Experience (exp)** follows before applying parametric method such as Accelerated Failure Time (AFT) model.We will examine two popular assumed form of **Experience (exp)** Weibull, Exponential distribution.
+```{r}
+library(goftest)
+fitdistr(emp_df$exp, "weibull")
+```
+
+```{r}
+weibullCDF <- function(x, shape, scale) {
+  1 - exp(- (x / scale)^shape)
+}
+# Estimate parameters if not known
+shape_hat <- 1.08272153  
+scale_hat <- 37.78782884
+
+# Perform the Anderson-Darling test for Weibull
+result <- ad.test(emp_df$exp, function(x) weibullCDF(x, shape = shape_hat, scale = scale_hat))
+
+# Print the test result
+print(result)
+
+```
+
+```{r}
+# Fit exponential model
+exp_model <- survreg(Surv(exp, event) ~ 1, data = emp_df, dist = 'exponential')
+lambda_hat <- 1 / exp_model$scale  # Rate parameter
+
+# Anderson-Darling test for exponentiality
+result <- ad.test(emp_df$exp, "pexp", rate = lambda_hat)
+
+# Print the result
+print(result)
+```
+After fitting the exponential model with a scale parameter of 1, we obtain a p-value of less than 0.05, leading us to reject the null hypothesis that the exponential distribution with a rate parameter of 1 is appropriate for this model. Next, we test the Weibull distribution, using the estimated scale and shape parameters derived from the exp variable in the dataset. The p-value from the Anderson-Darling Goodness-of-Fit test is 0.22, indicating that we fail to reject the null hypothesis. Thus, we proceed with the Weibull distribution as the assumption for the AFT model as below.
+
+We will define the base model that included all predictors, then perform step-wise regression for finding the best combinations of predictors (based on the criteria of lowest AIC)
+
+
+```{r}
+base_mod<-survreg(Surv(exp, event)~.,data = emp_df, dist = "weibull")
+step(base_mod)
+```
+
+
+
+```{r}
+best_mod <- survreg(formula = Surv(exp, event) ~ age + field + prof + route + 
+    wage + trans + score_selfctrl + score_anx, data = emp_df, 
+    dist = "weibull")
+summary(best_mod)
+```
+
+We can see some interesting insights based on the significant variables, the following would show all hazard ratios for each estimate obtained from the model and some interpretations of each significant factor based on the results, controlling other factors remain the same.
+
+
+```{r}
+haz_rate <- exp(best_mod$coefficients)
+haz_rate
+```
+Individuals working in the IT field tend to stay at their companies 2.2 times longer than those in finance. Similarly, individuals who apply for jobs through job sites or resumes generally have shorter tenures compared to those who secure positions through referrals from friends. Additionally, employees receiving fully taxed wages (white wages) tend to remain at their companies 52% longer than those receiving untaxed (gray) wages, indicating a longer duration of employment. Higher self-control scores are also associated with longer tenure. Interestingly, individuals who walk to work tend to stay 43.7% longer at their companies compared to those who primarily commute by bus.
+
+## Cox Proportional Hazards model (semi-parametric)
+
+In order to derive meaningful conclusions about employee retention with a robust handling of censored data that can serve as a predictive model, we can perform Cox proportional Hazard model (semi-parametric model).
+
+```{r}
+cox_base_mod <- coxph(Surv(exp, event)~.,data = emp_df)
+step(cox_base_mod)
+```
+
+
+```{r}
+best_cox_mod <- coxph(formula = Surv(exp, event) ~ age + field + prof + route + 
+    wage + trans + score_selfctrl + score_anx, data = emp_df)
+```
+
+
+Since we assumes that the hazard ratios are proportional over time, not assuming a specific form for the baseline hazard function, we will check for proportional hazard assumptions of this model as below:
+
+
+```{r}
+# PH-test
+ph_test <- cox.zph(best_cox_mod)
+print(ph_test)
+plot(ph_test)
+```
+```{r}
+# Stratify the model by the covariate that violates the assumption
+cox_model_strat <- coxph(Surv(exp, event) ~ age + field + strata(prof) + route + 
+    wage + trans + score_selfctrl + score_anx, data = emp_df)
+summary(cox_model_strat)
+```
+
+After applying stratify for the *prof* variables, we have the proportional hazard assumption holds for the model.
+
+```{r}
+# Test the proportional hazards assumption
+ph_test <- cox.zph(cox_model_strat)
+
+# Print the test results
+print(ph_test)
+
+# Plot the Schoenfeld residuals for each covariate
+plot(ph_test)
+```
+
+We have the following insights for the aboeve Cox proportional hazard model:
++ Employees hired through jobsite applications have a 54.2% higher risk of quitting compared to those from other routes. This may suggest that employees who apply online might be less committed or have more options
++ Employees hired by submitting resumes to job sites face almost double the risk of quitting compared to other sources, likely due to higher mobility or availability of alternative job offers
++ Employees receiving white (tax-authorized) wages have a 37.5% lower risk of quitting compared to those paid under a grey wage system. This suggests that legal, tax-compliant wage structures contribute to better retention, likely due to higher job security and benefits.
++ Employees who commute on foot have a 34.4% lower risk of quitting compared to bus commuters. This could suggest that employees living closer to work may have greater job stability or satisfaction.
++ For each unit increase in self-control, the risk of quitting decreases by 6.3%. Employees with higher self-control are likely to stay longer, which could be due to their ability to manage work stress and maintain focus on long-term goals.
++ For each unit increase in anxiety, the risk of quitting decreases by 5.9%. This counterintuitive result suggests that more anxious employees might stay longer, possibly due to a fear of change or job loss.
+
+```{r}
+# Define function for customizing the output for Cox proportional hazard model's results
+output_custom <- function(model, exp = FALSE){
+  # Extract coefficients
+  coeffs <- summary(model)$coefficients
+    
+  
+  output_df <- data.frame(
+    estimate = coeffs[,1],
+    std_err =  coeffs[,3],
+    p_val = coeffs[,5],
+    significant = coeffs[,5] <= 0.05
+  )
+  
+  output_df[,1:3] <- round(output_df[,1:3], 3)
+  
+  if (exp == TRUE){
+    output_df$exp_est <- round(coeffs[,2], 3)
+    output_df <- output_df %>% relocate(exp_est, .after = estimate)
+  }
+  
+  return (output_df)
+}
+```
+
+
+```{r}
+output_custom(cox_model_strat, exp = TRUE)
+```
+
+
+
+```{r}
+# Calculate the concordance index
+c_index_cox <- concordance(cox_model_strat)
+print(c_index_cox$concordance)
+```
+
+```{r}
+cox_model_strat_final <- coxph(Surv(exp, event) ~ age + field + strata(prof) + route + 
+    coach + head_gender + wage + trans + score_selfctrl + score_anx +score_anx, data = emp_df)
+summary(cox_model_strat_final)
+```
+
+With a C-index of 0.635 indicates the Cox proportional hazard model is better than random but has moderate predictive ability. Therefore, we can consider the non-linear model such as Random Forest Survival models and Gradient Boosting Survival models.
+
+
+### Uplift Survival Analysis
+
+
+```{r}
+library(tools4uplift)
+```
+Based on the above results, since we confirm that there's difference in terms of retention rate with the log-rank test for the following variable:
+- **Industry Sector (field)**
+- **Profession (prof)**
+- **Source came to Company (route)**
+- **Wage tax authorized or not (wage)**
+- **Mode of Transportation (trans)**
+
+We will conduct quasi-experimental analysis for each of those factors (treat each of those variables as potential treatment-like interventions that might affect employee retention)
+
+
+#### Industry Sector (Field)
+We have a hypothesis that different industries may respond differently to retention strategies like training or employee engagement program with better communication. 
+
+We will test if employees in retail or finance sectors have better retention when given more flexible schedules or additional professional development.
+
+```{r}
+temp <- data.frame(emp_df)
+temp$treatment <- ifelse(temp$field %in% c('finance', 'IT'), 1, 0)
+head(temp)
+```
+
+```{r}
+table(emp_df$route)
+```
+
+
+```{r}
+# Recreate emp_df_copy to avoid modifying the original data
+emp_df_copy <- temp[, c("treatment", "event", "route", "wage", "trans", "score_selfctrl", "score_anx")]
+
+# Ensure factor levels in the dataset are consistent
+emp_df_copy$route <- factor(emp_df_copy$route)
+emp_df_copy$trans <- factor(emp_df_copy$trans)
+
+# Fit the two-model uplift regression
+uplift_model <- DualUplift(emp_df_copy, treat = "treatment", outcome = "event", 
+                           predictors = c("route", "wage", "trans", "score_selfctrl", "score_anx"))
+
+print(uplift_model)
+summary(uplift_model)
+```
+
++ For Control Group
+*transfoot*: Negative effect (p = 0.020), indicating employees using foot transportation are less likely to experience the event.
+*score_selfctrl*: Negative effect (p = 0.049), suggesting lower self-control scores increase event likelihood.
+*routefriends* (p = 0.088) and *score_anx* (p = 0.068) are borderline significant, hinting at potential effects on the event.
++ For Treatment Group:
+*routefriends* (p = 0.079) is close to significant, indicating this route might influence the event.
+Other predictors show weaker effects, suggesting little impact in the treatment group.
+
+Insights based on this:
+*transfoot*: Employees commuting by foot are significantly more likely to quit in both control and treatment groups. Consider offering support like transportation benefits or flexible working arrangements.
+*score_selfctrl*: Low self-control is linked to higher quit rates, especially in the control group. Implement mentoring, goal-setting, or time management programs.
+
+
+
+#### Prof group
+We have a hypothesis that employees in different professions may have different retention risks due to job roles, job market demand, or career development opportunities.
+
+We will test if employees in high demand professions versus others to identify where retention strategies might have most uplift.
+
+```{r}
+
+# Create grouped 'prof' variable
+emp_df$prof_group <- with(emp_df, ifelse(prof %in% c("BusinessDevelopment", "manage", "Consult"), "Management & Leadership",
+                             ifelse(prof %in% c("Engineer", "IT"), "Technical & Engineering",
+                             ifelse(prof %in% c("Sales", "Marketing", "Commercial", "PR"), "Sales, Marketing & Commercial",
+                             ifelse(prof %in% c("Accounting", "Finance", "Law"), "Finance & Legal",
+                             ifelse(prof == "HR", "HR & Administration",
+                             ifelse(prof == "Teaching", "Specialized Roles", "Other")))))))
+
+table(emp_df$prof_group)
+
+```
+
+```{r}
+temp <- data.frame(emp_df)
+temp$treatment <- ifelse(temp$prof_group %in% c("Technical & Engineering"), 1, 0)
+head(temp)
+```
+```{r}
+# Recreate emp_df_copy to avoid modifying the original data
+temp_sub <- temp[, c("treatment", "event", "route", "wage", "trans", "score_selfctrl", "score_anx")]
+
+# Fit the two-model uplift regression
+uplift_model <- DualUplift(temp_sub, treat = "treatment", outcome = "event", 
+                           predictors = c("route", "wage", "trans", "score_selfctrl", "score_anx"))
+
+print(uplift_model)
+summary(uplift_model)
+```
+
++ Control group:
+- Employees with higher anxiety are more likely to quit.
+- Those who walk to work are more likely to quit.
+- Referral and friendship-based hires show some indication of lower turnover, though not strongly significant.
+
++ Treatment group:
++ Transportation (walking and driving) compared to go by bus seems to have a strong effect on turnover for IT & Engineering professionals.
++ Anxiety remains a factor in predicting quitting behavior, with marginal significance.
+
+Insights:
++ Anxiety is a significant factor in both control and treatment groups. Consider interventions like mental health support or stress management programs for employees with high anxiety scores.
++ In the treatment group, employees who drive to work seem to have lower turnover. You may want to target them for special retention programs or further incentives as they seem less likely to quit.
++ The control group shows that hiring through friends or recommendations might lead to lower turnover. While the treatment group results for route variables are inconclusive, consider revisiting how IT & Engineering employees are sourced. Referral programs might yield better long-term retention.
+
+
+
+```{r}
+chosen_factors = c("field", "prof", "route", "wage", "trans")
+unique_val_lst <- list()
+for (col in chosen_factors){
+  unique_val_lst[[col]] = unique(emp_df[col])
+}
+
+for (col in names(unique_val_lst)) {
+  print(unique_val_lst[[col]])
+}
+```
+
+
+#### Route
+We hypothesize that the source through which an employee was recruited might affect their retention. For example, employees recruited through referrals may have a stronger bond with the company than those recruited via job sites. Therefore, we use  recruitment source with more focusing on referral as a treatment-like variable to target specific interventions to employees from less effective pipelines.
+
+
+
+```{r}
+temp$treatment <- ifelse(temp$route %in% c("friends", "recommend"), 1, 0)
+head(temp)
+```
+
+```{r}
+# Recreate emp_df_copy to avoid modifying the original data
+temp_sub <- temp[, c("treatment", "event", "prof_group", "wage", "trans", "score_selfctrl", "score_anx")]
+
+# Fit the two-model uplift regression
+uplift_model <- DualUplift(temp_sub, treat = "treatment", outcome = "event", 
+                           predictors = c("prof_group", "wage", "trans", "score_selfctrl", "score_anx"))
+
+print(uplift_model)
+summary(uplift_model)
+```
+
++ Control Group:
+- Walking to work is the most significant predictor of turnover in the control group.
++ Treatment Group:
+- Referral-based hires in HR & Administration and Technical & Engineering roles are less likely to quit, suggesting that referrals work well for these professions.
+- Anxiety may increase the likelihood of quitting, even for referred employees.
+ Insights:
+- The model shows that HR & Administration and Technical & Engineering employees who were referred are less likely to quit. This suggests that referral programs are particularly effective for these roles. Strengthen and promote referral incentives for these professions to further enhance retention.
+
+- For other professions like Sales & Marketing or Management, the referral system may not be as effective
+- Walking to work is consistently associated with higher turnover in both the control and treatment groups
+- Anxiety is a marginally significant predictor of quitting, particularly in the treatment group.
+
+#### Wage Tax Authorized or not (Wage)
+
+We think that employees with unauthorized wages (grey wages) might be less satisfied or less committed due to unstable or unreported income, leading to higher turnover. Therefore, we decided to investigate more on the differential impact of interventions (more transparency in compensation) on employee with grey wages
+
+
+```{r}
+temp$treatment <- ifelse(temp$wage %in% c("grey"), 1, 0)
+head(temp)
+```
+
+
+```{r}
+# Recreate emp_df_copy to avoid modifying the original data
+temp_sub <- temp[, c("treatment", "event", "prof_group", "route", "trans", "score_selfctrl", "score_anx")]
+
+# Fit the two-model uplift regression
+uplift_model <- DualUplift(temp_sub, treat = "treatment", outcome = "event", 
+                           predictors = c("prof_group", "route", "trans", "score_selfctrl", "score_anx"))
+
+print(uplift_model)
+summary(uplift_model)
+```
+
++ Control Group
+- HR & Administration and Technical & Engineering employees on white wages are less likely to quit.
+- Employees who were hired through recommendations or jobsite resume submissions are more likely to quit, pointing to potential mismatches in these hiring routes.
+
++ Treatment Group
+- The model shows high instability and sparsity in the treatment group, making it difficult to derive strong conclusions. None of the factors (profession, hiring route, transportation, or psychological traits) appear to significantly affect quitting behavior for grey wage employees, apart from a marginal effect of driving to work.
+
+
+#### Mode of transportation (trans)
+
+We think that employees who use more convenient or subsidized transportation may have higher retention due to reduced commuting stress. Thus, we want to assess the impact of interventions like offering transporation benefits on employees with different commuting modes.
+
+
+```{r}
+table(emp_df$trans)
+```
+
+
+```{r}
+temp$treatment <- ifelse(temp$trans %in% c("bus"), 1, 0)
+head(temp)
+```
+
+
+```{r}
+# Recreate emp_df_copy to avoid modifying the original data
+temp_sub <- temp[, c("treatment", "event", "prof_group", "route", "wage", "score_selfctrl", "score_anx")]
+
+# Fit the two-model uplift regression
+uplift_model <- DualUplift(temp_sub, treat = "treatment", outcome = "event", 
+                           predictors = c("prof_group", "route", "wage", "score_selfctrl", "score_anx"))
+print(uplift_model)
+summary(uplift_model)
+```
+
++ Control group
+- Technical & Engineering employees and those with higher self-control or anxiety are less likely to quit among non-bus commuters.
++ Treatment group
+- HR & Administration employees who commute by bus are less likely to quit, while those hired through friends are also less likely to quit.
+- Conversely, bus commuters hired through recommendations are marginally more likely to quit, possibly due to unmet expectations or job mismatches.
+
+Insights:
+- HR & Administration employees commuting by bus are less likely to quit, indicating stronger job satisfaction or better alignment with organizational values.
+- Employees with higher self-control and anxiety are less likely to quit among non-bus commuters. 
+- For non-bus commuters, Technical & Engineering employees are less likely to quit. This group may have higher job satisfaction due to better alignment with role expectations. 
+- Bus commuters, particularly those in HR & Administration, appear more stable. Consider expanding transportation-related support (e.g., subsidized bus passes or carpool options) to encourage bus use, as it may correlate with lower turnover.
+
+
+# Summary and Conclusion
+Based on comprehensive analysis using various survival models (Kaplan-Meier, AFT, Cox Proportional Hazards, and Uplift models), several key factors influence employee retention, offering insights into potential strategies to reduce turnover.
+
+## Key Findings and Recap:
+
+1. For industry Sector & Profession:
+- Employees in *IT* tend to stay longer than those in *Finance* (2.2x longer), while *HR & Administration* employees show lower turnover rates across all analyses.
+- *Technical & Engineering* roles show a tendency for lower turnover when employees commute by car or bus, indicating potential job satisfaction and alignment with expectations.
+
+2. Hiring Source (Route to Company):
+- Employees hired through *jobsite applications* or *resume submissions* have a significantly higher risk of quitting (54% to double the risk), suggesting potential issues with job fit or commitment.
+- *Referral programs* show strong retention benefits, especially for HR & Administration and Technical & Engineering roles, where referred employees are significantly less likely to quit.
+
+3. Wage with tax compliance:
+- Employees receiving *white wages* (tax-authorized) have a 37.5% lower risk of quitting compared to those receiving untaxed *grey wages*. This suggests that legal wage structures offer better job security and benefits, which enhance retention.
+
+4. Mode of transportation:
+- Employees who walk to work tend to have shorter tenures or higher turnover. In contrast, commuters by bus—especially those in HR & Administration—appear more stable.
+- Car commuters among Technical & Engineering roles are less likely to quit, making this a group to consider for special retention programs or incentives.
+
+5. Psychological Scores:
+- Employees with *higher self-control* are more likely to stay longer, as each unit increase in self-control decreases the risk of quitting by 6.3%. Programs focusing on self-management, goal-setting, or mentoring may help retain these employees.
+- Employees with *higher anxiety* scores are less likely to quit, possibly due to a fear of change or job insecurity. Mental health and stress management programs could further support these employees, helping to maintain or enhance their performance while reducing burnout risks.
+
+6. Further insights from performing pseduo-experiment with Uplift models:
+- *Referral programs* are highly effective for HR & Administration and Technical & Engineering roles but less so for Sales, Marketing, and Management. Strengthening referral incentives for these critical roles could improve long-term retention.
+- Employees commuting *by bus* in HR & Administration roles show better job satisfaction and are less likely to quit. Transportation-related benefits like subsidized bus passes could enhance retention for this group.
+- Employees with *higher self-control and anxiety* in non-bus commuting groups are also less likely to quit. Understanding the personal circumstances of such employees and offering tailored support could further reduce turnover.
+
+## Suggestions and Recommendations:
+
+1. Referral Programs: Referral hires in Technical & Engineering, HR, and Administration roles are significantly less likely to quit. Expanding and promoting referral programs can lead to longer employee tenures in these critical areas.
+2. Wage Structure: Employees receiving white wages (tax-authorized) are more stable. We should always aim for structuring employees' wages with tax authorized.
+3. Hiring routes: Employees hired via job sites have significantly higher turnover rates. We should consider improving screening processes, on-boarding, or providing better pre-hire alignment to reduce mismatches. Alternatively, encourage referrals by providing more bonuses to employee throughout careful consideration for long-term retention.
+4. Support Bus or transportation subsidized program: Employees who walk to work tend to quit more often, while bus commuters in HR roles are more stable. We should introduce some transportation benefits, like bus subsidies or carpooling options, could increase stability for commuting employees, especially in HR & Administration.
+5. Provide mental health support:  Since higher self-control leads to longer tenures, and higher anxiety is linked with lower turnover, it may affect job performance. We should but some promotions on Mental health programs, including counseling and stress management workshops, should be offered to ensure anxious employees are supported and productive.
