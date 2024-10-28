@@ -1,7 +1,7 @@
 # Employee Retention Analysis: Insights and Strategies
 ![Fraud Detection Image](img/emp_retention.png)
 
-Please find in the following link for key recap: [View the Report (PDF)](key_recap.pdf)
+Please find in the following link for key recap: [View the Report (PDF)](employee_key_recap.pdf)
 
 
 For better experience with notebook, please visit this link from RPubs: https://rpubs.com/ryanngx217/1228148
